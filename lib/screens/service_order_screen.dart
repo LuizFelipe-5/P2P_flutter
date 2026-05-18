@@ -94,7 +94,7 @@ class _ServiceOrderScreenState extends State<ServiceOrderScreen> {
                   itemCount: order.tags.length,
                   itemBuilder: (context, index) {
                     final tag = order.tags[index];
-                    return _buildTagItem(tag);
+                    return _buildTagItem(tag, provider);
                   },
                 ),
               ),
@@ -200,7 +200,9 @@ class _ServiceOrderScreenState extends State<ServiceOrderScreen> {
     );
   }
 
-  Widget _buildTagItem(Tag tag) {
+  Widget _buildTagItem(Tag tag, ConnectionProvider provider) {
+    final canDelete = tag.addedBy == provider.userName || widget.isHost;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(16),
@@ -213,13 +215,23 @@ class _ServiceOrderScreenState extends State<ServiceOrderScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Icon(Icons.bookmark_added_rounded, color: Color(0xFFF0883E), size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Etiqueta adicionada por ${tag.addedBy}',
-                style: GoogleFonts.inter(color: const Color(0xFF8B949E), fontSize: 12),
+              Row(
+                children: [
+                  const Icon(Icons.bookmark_added_rounded, color: Color(0xFFF0883E), size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Etiqueta de ${tag.addedBy}',
+                    style: GoogleFonts.inter(color: const Color(0xFF8B949E), fontSize: 12),
+                  ),
+                ],
               ),
+              if (canDelete)
+                GestureDetector(
+                  onTap: () => provider.removeTag(tag.id),
+                  child: const Icon(Icons.delete_outline_rounded, color: Color(0xFFE53935), size: 20),
+                ),
             ],
           ),
           const SizedBox(height: 8),

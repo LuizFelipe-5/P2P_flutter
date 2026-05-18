@@ -223,6 +223,14 @@ class ConnectionProvider extends ChangeNotifier {
     _broadcastCurrentOrder();
   }
 
+  void removeTag(String tagId) {
+    if (_currentOrder == null) return;
+    
+    _currentOrder!.tags.removeWhere((t) => t.id == tagId);
+    notifyListeners();
+    _broadcastCurrentOrder();
+  }
+
   void _broadcastCurrentOrder() {
     if (_currentOrder == null || _connectedEndpoints.isEmpty) return;
     
