@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/connection_provider.dart';
-import 'chat_screen.dart';
+import 'service_order_screen.dart';
 
 class DiscoveryScreen extends StatefulWidget {
   final bool isAdvertiser;
@@ -45,9 +45,9 @@ class _DiscoveryScreenState extends State<DiscoveryScreen>
     super.dispose();
   }
 
-  void _navigateToChat() {
+  void _navigateToOrder() {
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const ChatScreen()),
+      MaterialPageRoute(builder: (_) => ServiceOrderScreen(isHost: widget.isAdvertiser)),
     );
   }
 
@@ -56,7 +56,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen>
     return Consumer<ConnectionProvider>(
       builder: (context, provider, _) {
         if (provider.connectionState == NearbyConnectionState.connected) {
-          WidgetsBinding.instance.addPostFrameCallback((_) => _navigateToChat());
+          WidgetsBinding.instance.addPostFrameCallback((_) => _navigateToOrder());
         }
         return Scaffold(
           body: Container(
@@ -154,7 +154,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen>
       case NearbyConnectionState.connecting:
         text = 'Connecting...'; color = const Color(0xFFF0883E);
       case NearbyConnectionState.connected:
-        text = 'Connected to ${p.connectedDeviceName}!'; color = const Color(0xFF3FB950);
+        text = 'Connected to ${p.connectedCount} device(s)'; color = const Color(0xFF3FB950);
       default:
         text = 'Ready'; color = const Color(0xFF8B949E);
     }

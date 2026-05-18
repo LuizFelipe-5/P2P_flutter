@@ -1,9 +1,9 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:nearby_connections/nearby_connections.dart';
 
-import '../models/message.dart';
+import '../models/service_order.dart';
 import '../services/nearby_service.dart';
 
 /// Possible states of the connection lifecycle.
@@ -35,6 +35,8 @@ class ConnectionProvider extends ChangeNotifier {
   NearbyConnectionState _connectionState = NearbyConnectionState.idle;
   NearbyConnectionState get connectionState => _connectionState;
 
+  bool _isHost = false; // Tracks if this device is the Advertiser (Server)
+
   String _userName = '';
   String get userName => _userName;
 
@@ -42,14 +44,12 @@ class ConnectionProvider extends ChangeNotifier {
   List<DiscoveredDevice> get discoveredDevices =>
       List.unmodifiable(_discoveredDevices);
 
-  String? _connectedEndpointId;
-  String? get connectedEndpointId => _connectedEndpointId;
+  final Map<String, String> _connectedEndpoints = {};
+  Map<String, String> get connectedEndpoints => Map.unmodifiable(_connectedEndpoints);
+  int get connectedCount => _connectedEndpoints.length;
 
-  String _connectedDeviceName = '';
-  String get connectedDeviceName => _connectedDeviceName;
-
-  final List<ChatMessage> _messages = [];
-  List<ChatMessage> get messages => List.unmodifiable(_messages);
+  ServiceOrder? _currentOrder;
+  ServiceOrder? get currentOrder => _currentOrder;
 
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
@@ -76,6 +76,7 @@ class ConnectionProvider extends ChangeNotifier {
 
   Future<bool> startAdvertising() async {
     _clearError();
+    _isHost = true;
     _connectionState = NearbyConnectionState.advertising;
     notifyListeners();
 
@@ -105,6 +106,7 @@ class ConnectionProvider extends ChangeNotifier {
 
   Future<bool> startDiscovery() async {
     _clearError();
+    _isHost = false;
     _discoveredDevices.clear();
     _connectionState = NearbyConnectionState.discovering;
     notifyListeners();
@@ -183,55 +185,54 @@ class ConnectionProvider extends ChangeNotifier {
   }
 
   void disconnect() {
-    if (_connectedEndpointId != null) {
-      _service.disconnectFromEndpoint(_connectedEndpointId!);
+    for (final id in _connectedEndpoints.keys) {
+      _service.disconnectFromEndpoint(id);
     }
-    _connectedEndpointId = null;
-    _connectedDeviceName = '';
-    _messages.clear();
+    _connectedEndpoints.clear();
+    _currentOrder = null;
     _connectionState = NearbyConnectionState.idle;
     notifyListeners();
   }
 
   // -- Data exchange ---------------------------------------------------------
 
-  Future<void> sendTextMessage(String text) async {
-    if (_connectedEndpointId == null || text.trim().isEmpty) return;
-
-    await _service.sendTextMessage(_connectedEndpointId!, text);
-
-    _messages.add(ChatMessage(
-      senderName: _userName,
-      content: text,
-      timestamp: DateTime.now(),
-      isMe: true,
-      type: MessageType.text,
-    ));
+  void createServiceOrder(String id) {
+    if (!_isHost) return;
+    _currentOrder = ServiceOrder(
+      id: id,
+      status: 'Aberto',
+      createdBy: _userName,
+      createdAt: DateTime.now(),
+    );
     notifyListeners();
+    _broadcastCurrentOrder();
   }
 
-  Future<void> sendFile(String filePath, String fileName) async {
-    if (_connectedEndpointId == null) return;
+  void addTag(String blockPoint) {
+    if (_currentOrder == null) return;
 
-    // Send the file payload
-    final payloadId =
-        await _service.sendFile(_connectedEndpointId!, filePath);
+    final newTag = Tag(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      blockPoint: blockPoint,
+      addedBy: _userName,
+      addedAt: DateTime.now(),
+    );
 
-    if (payloadId != null) {
-      // Send filename metadata so the receiver knows what it is
-      await _service.sendTextMessage(
-        _connectedEndpointId!,
-        '__FILE_META__:$payloadId:$fileName',
-      );
+    _currentOrder!.tags.add(newTag);
+    notifyListeners();
+    _broadcastCurrentOrder();
+  }
 
-      _messages.add(ChatMessage(
-        senderName: _userName,
-        content: '📁 $fileName',
-        timestamp: DateTime.now(),
-        isMe: true,
-        type: MessageType.file,
-      ));
-      notifyListeners();
+  void _broadcastCurrentOrder() {
+    if (_currentOrder == null || _connectedEndpoints.isEmpty) return;
+    
+    final payloadStr = jsonEncode({
+      'type': 'sync_order',
+      'order': _currentOrder!.toMap(),
+    });
+
+    for (final id in _connectedEndpoints.keys) {
+      _service.sendTextMessage(id, payloadStr);
     }
   }
 
@@ -241,9 +242,8 @@ class ConnectionProvider extends ChangeNotifier {
     await _service.stopAllEndpoints();
     _connectionState = NearbyConnectionState.idle;
     _discoveredDevices.clear();
-    _connectedEndpointId = null;
-    _connectedDeviceName = '';
-    _messages.clear();
+    _connectedEndpoints.clear();
+    _currentOrder = null;
     _pendingEndpointId = null;
     _pendingConnectionInfo = null;
     notifyListeners();
@@ -254,7 +254,6 @@ class ConnectionProvider extends ChangeNotifier {
   void _onConnectionInitiated(String endpointId, ConnectionInfo info) {
     _pendingEndpointId = endpointId;
     _pendingConnectionInfo = info;
-    _connectedDeviceName = info.endpointName;
     notifyListeners();
 
     // Auto-accept for POC simplicity
@@ -263,30 +262,38 @@ class ConnectionProvider extends ChangeNotifier {
 
   void _onConnectionResult(String endpointId, Status status) {
     if (status == Status.CONNECTED) {
-      _connectedEndpointId = endpointId;
+      final deviceName = _pendingConnectionInfo?.endpointName ?? 'Unknown';
+      _connectedEndpoints[endpointId] = deviceName;
       _connectionState = NearbyConnectionState.connected;
-      // Stop advertising/discovery once connected
-      _service.stopAdvertising();
-      _service.stopDiscovery();
+      
+      // Send current state to newly connected client if we are host
+      if (_isHost && _currentOrder != null) {
+         final payloadStr = jsonEncode({
+          'type': 'sync_order',
+          'order': _currentOrder!.toMap(),
+        });
+        _service.sendTextMessage(endpointId, payloadStr);
+      }
     } else {
-      _connectionState = NearbyConnectionState.idle;
+      if (_connectedEndpoints.isEmpty) {
+        _connectionState = NearbyConnectionState.idle;
+      }
       _errorMessage = 'Connection ${status == Status.REJECTED ? 'rejected' : 'failed'}';
     }
     notifyListeners();
   }
 
   void _onDisconnected(String endpointId) {
-    if (_connectedEndpointId == endpointId) {
-      _connectedEndpointId = null;
-      _connectedDeviceName = '';
-      _connectionState = NearbyConnectionState.idle;
-      _messages.add(ChatMessage(
-        senderName: 'System',
-        content: 'Device disconnected',
-        timestamp: DateTime.now(),
-        isMe: false,
-        type: MessageType.text,
-      ));
+    if (_connectedEndpoints.containsKey(endpointId)) {
+      final name = _connectedEndpoints[endpointId];
+      _connectedEndpoints.remove(endpointId);
+      
+      if (_connectedEndpoints.isEmpty) {
+        _connectionState = NearbyConnectionState.idle;
+      }
+      
+      // Could show a snackbar or log that someone disconnected
+      debugPrint('$name disconnected');
       notifyListeners();
     }
   }
@@ -309,28 +316,32 @@ class ConnectionProvider extends ChangeNotifier {
 
   void _onPayloadReceived(String endpointId, Payload payload) {
     if (payload.type == PayloadType.BYTES && payload.bytes != null) {
-      final text = utf8.decode(payload.bytes!);
+      final jsonStr = utf8.decode(payload.bytes!);
 
-      // Skip file metadata messages from display
-      if (text.startsWith('__FILE_META__:')) return;
+      try {
+        final data = jsonDecode(jsonStr);
+        final msgType = data['type'];
 
-      _messages.add(ChatMessage(
-        senderName: _connectedDeviceName,
-        content: text,
-        timestamp: DateTime.now(),
-        isMe: false,
-        type: MessageType.text,
-      ));
-      notifyListeners();
-    } else if (payload.type == PayloadType.FILE) {
-      _messages.add(ChatMessage(
-        senderName: _connectedDeviceName,
-        content: '📁 File received',
-        timestamp: DateTime.now(),
-        isMe: false,
-        type: MessageType.file,
-      ));
-      notifyListeners();
+        if (msgType == 'sync_order') {
+          _currentOrder = ServiceOrder.fromMap(data['order']);
+          notifyListeners();
+
+          // Rebroadcast to keep everyone else in sync
+          if (_isHost) {
+            _forwardPayload(endpointId, jsonStr);
+          }
+        }
+      } catch (e) {
+        debugPrint('Error parsing payload: $e');
+      }
+    }
+  }
+
+  void _forwardPayload(String senderEndpointId, String payloadStr) {
+    for (final id in _connectedEndpoints.keys) {
+      if (id != senderEndpointId) {
+        _service.sendTextMessage(id, payloadStr);
+      }
     }
   }
 
